@@ -1,119 +1,60 @@
-# Sophos Auto Login
+# Sophos Auto Login (Go)
 
-This project provides a simple Python script to automate login and logout for a Sophos captive portal, commonly used in institutional or enterprise networks.
+This repository now focuses on the Go implementation that automates login and logout for Sophos captive portals—commonly deployed on institutional networks. The binary maintains an authenticated session, periodically verifies connectivity, and gracefully shuts down when requested.
 
 ## Features
 
-- Automatically logs in to the Sophos captive portal.
-- Supports running for a specified duration (in minutes or hours) or indefinitely.
-- Allows manual logout by pressing `q`/`Q` or using `Ctrl+C`.
+- Captive portal login/logout via HTTP form posts.
+- Duration control: run forever or for a specified number of minutes/hours.
+- Retry logic: checks connectivity every 30 seconds and re-authenticates when needed.
+- Graceful shutdown on `q`/`Q`, `Ctrl+C`, or `SIGTERM`.
+- Connection-pooled HTTP client with sane timeouts for long-running stability.
 
-## Requirements
+## Prerequisites
 
-- Python 3.x
-- `requests` library (install with `pip install requests`)
-
-## Compiling to a Standalone Binary (macOS, Optimized)
-
-You can compile `Main.py` into a highly optimized standalone executable using Nuitka. This reduces memory and CPU usage compared to running with Python directly.
-
-### Steps
-
-1. **Install Nuitka and Required Tools**
-
-   ```sh
-   python3 -m pip install --upgrade pip nuitka
-   ```
-
-2. **Compile the Script**
-
-   Navigate to your project directory:
-
-   ```sh
-   cd /Users/dhairya/Development/Sophos-Auto-Login
-   ```
-
-   Then run:
-
-   ```sh
-   nuitka Main.py \
-     --standalone \
-     --onefile \
-     --enable-plugin=upx \
-     --assume-yes-for-downloads \
-     --follow-imports \
-     --remove-output \
-     --nofollow-import-to=tkinter,test \
-     --noinclude-pytest-mode=nofollow \
-     --no-pyi-file \
-     --lto=yes \
-     --clang \
-     --static-libpython=yes \
-     --low-memory \
-     --force-stdout-spec=yes \
-     --enable-console
-   ```
-
-3. **(Optional) Strip the Binary**
-
-   To further reduce the binary size:
-
-   ```sh
-   strip auto_login
-   ```
-
-4. **Run the Optimized Binary**
-
-   ```sh
-   ./auto_login
-   ```
-
----
+- Go 1.20+ (tested on macOS)
 
 ## Configuration
 
-Edit the `Main.py` file and set your actual username and password at the top:
+Edit the constants near the top of `main.go`:
 
-```python
-username = 'your_username'  # Replace with your actual username
-password = 'your_password'  # Replace with your actual password
+```go
+const (
+    Username = "your_username"
+    Password = "your_password"
+)
 ```
 
-## Usage
+For production, prefer environment variables, encrypted files, or a secret manager. The hard-coded constants are convenient for local builds only.
 
-Run the script from the command line:
+## Build
 
 ```bash
-python Main.py [options]
+cd /Users/dhairya/Development/Sophos-auto-login
+go build -o sophos-login main.go
 ```
 
-### Options
-
-- `-f`, `--forever` : Run the script indefinitely until you quit.
-- `-m MINUTES`, `--minutes MINUTES` : Run for the specified number of minutes.
-- `-H HOURS`, `--hours HOURS` : Run for the specified number of hours.
-
-If no option is provided, the script defaults to running for 60 minutes.
-
-### Example
-
-Run for 2 hours:
+## Run
 
 ```bash
-python Main.py --hours 2
+./sophos-login [flags]
 ```
 
-Run indefinitely:
+### Useful Flags
 
-```bash
-python Main.py --forever
-```
+- `-forever` — Run until you quit manually.
+- `-minutes <n>` — Run for `<n>` minutes.
+- `-hours <n>` — Run for `<n>` hours.
 
-## Stopping the Script
+If you skip all duration flags, the program defaults to 60 minutes. Use `./sophos-login -h` to see the full flag list.
 
-- Press `q` or `Q` and hit Enter to logout and exit.
-- Or press `Ctrl+C` to logout and exit.
+### Stopping the Program
 
-## Disclaimer
+- Press `q` or `Q` (followed by Enter) to log out and exit.
+- Press `Ctrl+C` to trigger cleanup and logout.
 
-- This script is for educational purposes. Use it responsibly and only on networks where you have permission.
+## Notes
+
+- Keep credentials out of version control. `.gitignore` already excludes common secret files—extend it as needed.
+- Test the binary on your target network before relying on it unattended.
+- Use this utility only on networks where you have explicit permission.
