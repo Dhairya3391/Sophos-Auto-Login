@@ -278,10 +278,10 @@ func runMainLoop(config *Config) error {
 func main() {
 	config := parseFlags()
 
-	// Set default duration if no flags provided
+	// Set default to forever if no flags provided
 	if !config.Forever && config.Duration == 0 {
-		config.Duration = 60 * time.Minute
-		fmt.Println("No duration flag given. Defaulting to 60 minutes. Press q/Q or Ctrl+C to logout and stop...")
+		config.Forever = true
+		fmt.Println("No duration flag given. Defaulting to forever. Press q/Q or Ctrl+C to logout and stop...")
 	} else if config.Forever {
 		fmt.Println("Running forever. Press q/Q or Ctrl+C to logout and stop...")
 	} else if config.Duration > 0 {
