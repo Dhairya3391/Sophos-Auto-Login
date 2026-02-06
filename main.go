@@ -3,18 +3,25 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/xml"
 	"flag"
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+)
+
+// ANSI color codes for cleaner output
+const (
+	colorReset  = "\033[0m"
+	colorGreen  = "\033[32m"
+	colorRed    = "\033[31m"
+	colorYellow = "\033[33m"
+	colorGray   = "\033[90m"
 )
 
 // Configuration constants
@@ -27,27 +34,13 @@ const (
 	UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 )
 
-// Response structures for XML parsing
-type LoginResponse struct {
-	XMLName xml.Name `xml:"response"`
-	Status  string   `xml:"status,attr"`
-	Message string   `xml:"message,attr"`
-}
-
-type LogoutResponse struct {
-	XMLName xml.Name `xml:"response"`
-	Status  string   `xml:"status,attr"`
-	Message string   `xml:"message,attr"`
-}
-
-// Optimized HTTP client with connection pooling
+// HTTP client with connection pooling
 var httpClient = &http.Client{
 	Timeout: 10 * time.Second,
 	Transport: &http.Transport{
 		MaxIdleConns:        10,
 		MaxIdleConnsPerHost: 5,
 		IdleConnTimeout:     30 * time.Second,
-		DisableCompression:  false,
 	},
 }
 
@@ -57,21 +50,20 @@ type Config struct {
 	Forever  bool
 }
 
-// LoginPayload represents the login form data
-type LoginPayload struct {
-	Mode        string `url:"mode"`
-	Username    string `url:"username"`
-	Password    string `url:"password"`
-	A           string `url:"a"`
-	ProductType string `url:"producttype"`
-}
+// formatDuration formats a duration as human-readable string
+func formatDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
 
-// LogoutPayload represents the logout form data
-type LogoutPayload struct {
-	Mode        string `url:"mode"`
-	Username    string `url:"username"`
-	A           string `url:"a"`
-	ProductType string `url:"producttype"`
+	if h > 0 {
+		return fmt.Sprintf("%dh %dm %ds", h, m, s)
+	}
+	if m > 0 {
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+	return fmt.Sprintf("%ds", s)
 }
 
 // login performs captive portal login with optimized HTTP client
@@ -97,20 +89,14 @@ func login() error {
 		return fmt.Errorf("login request failed: %w", err)
 	}
 	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read login response: %w", err)
-	}
+	// Drain the response body to allow connection reuse
+	io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode == 200 {
-		fmt.Println("Login successful!")
-		fmt.Printf("Response: %s\n", string(body))
-	} else {
-		return fmt.Errorf("login failed with status code %d: %s", resp.StatusCode, string(body))
+		fmt.Printf("%s✓%s Login successful\n", colorGreen, colorReset)
+		return nil
 	}
-
-	return nil
+	return fmt.Errorf("login failed (status %d)", resp.StatusCode)
 }
 
 // logout performs captive portal logout
@@ -135,39 +121,32 @@ func logout() error {
 		return fmt.Errorf("logout request failed: %w", err)
 	}
 	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read logout response: %w", err)
-	}
+	// Drain the response body to allow connection reuse
+	io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode == 200 {
-		fmt.Println("Logout successful!")
-		fmt.Printf("Response: %s\n", string(body))
-	} else {
-		return fmt.Errorf("logout failed with status code %d: %s", resp.StatusCode, string(body))
+		fmt.Printf("%s✓%s Logout successful\n", colorYellow, colorReset)
+		return nil
 	}
-
-	return nil
+	return fmt.Errorf("logout failed (status %d)", resp.StatusCode)
 }
 
-// checkPing performs optimized connectivity check using raw socket
-func checkPing() bool {
+// checkInternet verifies actual internet connectivity (not just captive portal reachability)
+func checkInternet() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	// Use a more efficient approach - try to establish a TCP connection
-	// to a reliable endpoint instead of relying on external ping command
-	dialer := &net.Dialer{
-		Timeout: 2 * time.Second,
-	}
-
-	conn, err := dialer.DialContext(ctx, "tcp", "1.1.1.1:53")
+	req, err := http.NewRequestWithContext(ctx, "HEAD", "http://www.gstatic.com/generate_204", nil)
 	if err != nil {
 		return false
 	}
-	conn.Close()
-	return true
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == 204
 }
 
 // parseFlags parses command line arguments
@@ -201,41 +180,26 @@ func parseFlags() *Config {
 	return config
 }
 
-// setupTerminalInput handles terminal input for quit functionality
-func setupTerminalInput(quitChan chan<- struct{}) {
+// setupSignalHandler handles graceful shutdown on interrupt signals
+func setupSignalHandler(quitChan chan<- struct{}) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		select {
-		case <-sigChan:
-			fmt.Println("\nInterrupt signal detected. Logging out and exiting...")
-			quitChan <- struct{}{}
-		}
-	}()
-
-	// For terminal input, we'll use a simpler approach
-	// that doesn't require raw terminal manipulation
-	go func() {
-		var input string
-		for {
-			_, err := fmt.Scanln(&input)
-			if err != nil {
-				continue // No input available
-			}
-			if input == "q" || input == "Q" {
-				fmt.Println("\nDetected q/Q. Logging out and exiting...")
-				quitChan <- struct{}{}
-				return
-			}
-		}
+		<-sigChan
+		fmt.Printf("\n%s!%s Interrupt received. Logging out...\n", colorRed, colorReset)
+		quitChan <- struct{}{}
 	}()
 }
 
 // runMainLoop executes the main application loop
 func runMainLoop(config *Config) error {
 	quitChan := make(chan struct{}, 1)
-	setupTerminalInput(quitChan)
+	setupSignalHandler(quitChan)
+
+	// Cleanup on exit
+	defer fmt.Print(colorReset)
+	defer httpClient.CloseIdleConnections()
 
 	startTime := time.Now()
 	ticker := time.NewTicker(1 * time.Second)
@@ -247,28 +211,31 @@ func runMainLoop(config *Config) error {
 	for {
 		select {
 		case <-quitChan:
+			fmt.Println()
 			return logout()
 		case <-ticker.C:
 			now := time.Now()
+			elapsed := now.Sub(startTime).Round(time.Second)
 
 			// Check duration limit
 			if !config.Forever && config.Duration > 0 {
-				elapsed := now.Sub(startTime)
 				if elapsed >= config.Duration {
-					fmt.Println("\nAuto logout timer expired.")
+					fmt.Printf("\n%s⏱%s Timer expired. Logging out...\n", colorYellow, colorReset)
 					return logout()
 				}
 				remaining := config.Duration - elapsed
-				fmt.Printf("Press q or Q to logout and stop. Time left: %d seconds\r", int(remaining.Seconds()))
+				fmt.Printf("\033[2K\r%s●%s Connected for %s | Time left: %s | Ctrl+C to logout",
+					colorGreen, colorGray, formatDuration(elapsed), formatDuration(remaining))
 			} else {
-				fmt.Print("Press q or Q to logout and stop. \r")
+				fmt.Printf("\033[2K\r%s●%s Connected for %s | Ctrl+C to logout",
+					colorGreen, colorGray, formatDuration(elapsed))
 			}
 
 		case <-statusCheckTicker.C:
-			if !checkPing() {
-				fmt.Println("\nPing failed. Attempting to re-login...")
+			if !checkInternet() {
+				fmt.Printf("\n%s!%s Connection lost. Reconnecting...\n", colorRed, colorReset)
 				if err := login(); err != nil {
-					log.Printf("Re-login failed: %v", err)
+					fmt.Printf("%s✗%s Re-login failed: %v\n", colorRed, colorReset, err)
 				}
 			}
 		}
@@ -281,26 +248,38 @@ func main() {
 	// Set default to forever if no flags provided
 	if !config.Forever && config.Duration == 0 {
 		config.Forever = true
-		fmt.Println("No duration flag given. Defaulting to forever. Press q/Q or Ctrl+C to logout and stop...")
+		fmt.Printf("%sℹ%s No duration flag given. Defaulting to forever.\n", colorGray, colorReset)
 	} else if config.Forever {
-		fmt.Println("Running forever. Press q/Q or Ctrl+C to logout and stop...")
+		fmt.Printf("%sℹ%s Running forever.\n", colorGray, colorReset)
 	} else if config.Duration > 0 {
 		hours := int(config.Duration.Hours())
 		minutes := int(config.Duration.Minutes()) % 60
 		if hours > 0 {
-			fmt.Printf("Running for %d hours", hours)
+			fmt.Printf("%sℹ%s Running for %d hours", colorGray, colorReset, hours)
 			if minutes > 0 {
 				fmt.Printf(" and %d minutes", minutes)
 			}
 		} else {
-			fmt.Printf("Running for %d minutes", minutes)
+			fmt.Printf("%sℹ%s Running for %d minutes", colorGray, colorReset, minutes)
 		}
-		fmt.Println(". Press q/Q or Ctrl+C to logout and stop...")
+		fmt.Println()
 	}
 
-	// Perform initial login
-	if err := login(); err != nil {
-		log.Fatalf("Initial login failed: %v", err)
+	// Perform initial login with retry
+	maxRetries := 3
+	var loginErr error
+	for i := 0; i < maxRetries; i++ {
+		if loginErr = login(); loginErr == nil {
+			break
+		}
+		if i < maxRetries-1 {
+			delay := time.Duration(1<<i) * time.Second
+			fmt.Printf("%s⚠%s Retrying in %v...\n", colorYellow, colorReset, delay)
+			time.Sleep(delay)
+		}
+	}
+	if loginErr != nil {
+		log.Fatalf("Initial login failed after %d attempts: %v", maxRetries, loginErr)
 	}
 
 	// Run main loop
